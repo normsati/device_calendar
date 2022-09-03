@@ -1,8 +1,12 @@
 import EventKit
+import Foundation
+#if TARGET_OS_IPHONE
 import EventKitUI
 import Flutter
-import Foundation
 import UIKit
+#else
+import FlutterMacOS
+#endif
 
 extension Date {
     var millisecondsSinceEpoch: Double { return self.timeIntervalSince1970 * 1000.0 }
@@ -14,7 +18,7 @@ extension EKParticipant {
     }
 }
 
-public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDelegate, UINavigationControllerDelegate {
+public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
     struct Calendar: Codable {
         let id: String
         let name: String
@@ -140,7 +144,7 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
     var flutterResult : FlutterResult?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(name: channelName, binaryMessenger: registrar.messenger())
+        let channel = FlutterMethodChannel(name: channelName, binaryMessenger: registrar.messenger)
         let instance = SwiftDeviceCalendarPlugin()
         registrar.addMethodCallDelegate(instance, channel: channel)
     }
@@ -166,8 +170,12 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
         case deleteCalendarMethod:
             deleteCalendar(call, result)
         case showEventModalMethod:
+#if TARGET_OS_IPHONE
             self.flutterResult = result
             showEventModal(call, result)
+#else
+            result(FlutterError(code: self.genericError, message: "not available for MacOS", details: nil))
+#endif
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -206,10 +214,18 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
             let calendarColor = arguments[calendarColorArgument] as? String
             
             if (calendarColor != nil) {
+#if TARGET_OS_IPHONE
                 calendar.cgColor = UIColor(hex: calendarColor!)?.cgColor
+#else
+                calendar.color = NSColor(hex: calendarColor!)
+#endif
             }
             else {
+#if TARGET_OS_IPHONE
                 calendar.cgColor = UIColor(red: 255, green: 0, blue: 0, alpha: 0).cgColor // Red colour as a default
+#else
+                calendar.color = NSColor.red
+#endif
             }
             
             guard let source = getSource() else {
@@ -234,12 +250,18 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
             let defaultCalendar = self.eventStore.defaultCalendarForNewEvents
             var calendars = [Calendar]()
             for ekCalendar in ekCalendars {
+                var color:Int = 0
+                #if TARGET_OS_IPHONE
+                    color = UIColor(cgColor: ekCalendar.cgColor).rgb()!
+                #else
+                color = ekCalendar.color?.rgb() ?? NSColor.gray.rgb() ?? 0
+                #endif
                 let calendar = Calendar(
                     id: ekCalendar.calendarIdentifier,
                     name: ekCalendar.title,
                     isReadOnly: !ekCalendar.allowsContentModifications,
                     isDefault: defaultCalendar?.calendarIdentifier == ekCalendar.calendarIdentifier,
-                    color: UIColor(cgColor: ekCalendar.cgColor).rgb()!,
+                    color: color,
                     accountName: ekCalendar.source.title,
                     accountType: getAccountType(ekCalendar.source.sourceType))
                 calendars.append(calendar)
@@ -730,7 +752,11 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
             }
             
             do {
-                try self.eventStore.save(ekEvent!, span: .futureEvents)
+                if #available(macOS 10.14, *) {
+                    try self.eventStore.save(ekEvent!, span: .futureEvents)
+                } else {
+                    try self.eventStore.save(ekEvent!, span: .futureEvents, commit: true)
+                }
                 result(ekEvent!.eventIdentifier)
             } catch {
                 self.eventStore.reset()
@@ -779,7 +805,11 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
                 }
                 
                 do {
-                    try self.eventStore.remove(ekEvent!, span: .futureEvents)
+                    if #available(macOS 10.14, *) {
+                        try self.eventStore.remove(ekEvent!, span: .futureEvents)
+                    } else {
+                        try self.eventStore.remove(ekEvent!, span: .futureEvents, commit: true)
+                    }
                     result(true)
                 } catch {
                     self.eventStore.reset()
@@ -817,60 +847,6 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
         }, result: result)
     }
 
-       private func showEventModal(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
-        checkPermissionsThenExecute(permissionsGrantedAction: {
-            let arguments = call.arguments as! Dictionary<String, AnyObject>
-            let eventId = arguments[eventIdArgument] as! String
-            let event = self.eventStore.event(withIdentifier: eventId)
-            
-            if event != nil {
-                let eventController = EKEventViewController()
-                eventController.event = event!
-                eventController.delegate = self
-                eventController.allowsEditing = true
-                eventController.allowsCalendarPreview = true
-                
-                let flutterViewController = getTopMostViewController()
-                let navigationController = UINavigationController(rootViewController: eventController)
-                
-                navigationController.toolbar.isTranslucent = false
-                navigationController.toolbar.tintColor = .blue
-                navigationController.toolbar.backgroundColor = .white
-
-                flutterViewController.present(navigationController, animated: true, completion: nil)
-                
-               
-            } else {
-                result(FlutterError(code: self.genericError, message: self.eventNotFoundErrorMessageFormat, details: nil))
-            }
-        }, result: result)
-    }
-    
-    public func eventViewController(_ controller: EKEventViewController, didCompleteWith action: EKEventViewAction) {
-        controller.dismiss(animated: true, completion: nil)
-        
-        if flutterResult != nil {
-            switch action {
-            case .done:
-                flutterResult!(nil)
-            case .responded:
-                flutterResult!(nil)
-            case .deleted:
-                flutterResult!(nil)
-            @unknown default:
-                flutterResult!(nil)
-            }
-        }
-    }
-    
-    private func getTopMostViewController() -> UIViewController {
-         var topController: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
-         while ((topController?.presentedViewController) != nil) {
-           topController = topController?.presentedViewController
-         }
-        
-         return topController!
-    }
     
     private func finishWithUnauthorizedError(result: @escaping FlutterResult) {
         result(FlutterError(code:self.unauthorizedErrorCode, message: self.unauthorizedErrorMessage, details: nil))
@@ -931,11 +907,76 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin, EKEventViewDele
             result(true)
         }
         eventStore.requestAccess(to: .event, completion: {
-            (accessGranted: Bool, _: Error?) in
-            result(accessGranted)
+            (accessGranted: Bool, error: Error?) in
+            if let error = error {
+                print("request error \(error)")
+                result(false)
+            } else {
+                result(accessGranted)
+            }
         })
     }
 }
+
+#if TARGET_OS_IPHONE
+extension SwiftDeviceCalendarPlugin : EKEventViewDelegate, UINavigationControllerDelegate {
+    
+    private func showEventModal(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
+         checkPermissionsThenExecute(permissionsGrantedAction: {
+             let arguments = call.arguments as! Dictionary<String, AnyObject>
+             let eventId = arguments[eventIdArgument] as! String
+             let event = self.eventStore.event(withIdentifier: eventId)
+             
+             if event != nil {
+                 let eventController = EKEventViewController()
+                 eventController.event = event!
+                 eventController.delegate = self
+                 eventController.allowsEditing = true
+                 eventController.allowsCalendarPreview = true
+                 
+                 let flutterViewController = getTopMostViewController()
+                 let navigationController = UINavigationController(rootViewController: eventController)
+                 
+                 navigationController.toolbar.isTranslucent = false
+                 navigationController.toolbar.tintColor = .blue
+                 navigationController.toolbar.backgroundColor = .white
+
+                 flutterViewController.present(navigationController, animated: true, completion: nil)
+                 
+                
+             } else {
+                 result(FlutterError(code: self.genericError, message: self.eventNotFoundErrorMessageFormat, details: nil))
+             }
+         }, result: result)
+     }
+ 
+     public func eventViewController(_ controller: EKEventViewController, didCompleteWith action: EKEventViewAction) {
+         controller.dismiss(animated: true, completion: nil)
+         
+         if flutterResult != nil {
+             switch action {
+             case .done:
+                 flutterResult!(nil)
+             case .responded:
+                 flutterResult!(nil)
+             case .deleted:
+                 flutterResult!(nil)
+             @unknown default:
+                 flutterResult!(nil)
+             }
+         }
+     }
+    
+    private func getTopMostViewController() -> UIViewController {
+         var topController: UIViewController? = UIApplication.shared.keyWindow?.rootViewController
+         while ((topController?.presentedViewController) != nil) {
+           topController = topController?.presentedViewController
+         }
+        
+         return topController!
+    }
+}
+#endif
 
 extension Date {
     func convert(from initTimeZone: TimeZone, to targetTimeZone: TimeZone) -> Date {
@@ -944,6 +985,7 @@ extension Date {
     }
 }
 
+#if TARGET_OS_IPHONE
 extension UIColor {
     func rgb() -> Int? {
         var fRed : CGFloat = 0
@@ -991,4 +1033,52 @@ extension UIColor {
         return nil
     }
 }
+#else
+extension NSColor {
+    func rgb() -> Int? {
+        var fRed : CGFloat = 0
+        var fGreen : CGFloat = 0
+        var fBlue : CGFloat = 0
+        var fAlpha: CGFloat = 0
+        if let color = self.usingColorSpace(.sRGB) {
+            color.getRed(&fRed, green: &fGreen, blue: &fBlue, alpha: &fAlpha)
+            let iRed = Int(fRed * 255.0)
+            let iGreen = Int(fGreen * 255.0)
+            let iBlue = Int(fBlue * 255.0)
+            let iAlpha = Int(fAlpha * 255.0)
 
+            //  (Bits 24-31 are alpha, 16-23 are red, 8-15 are green, 0-7 are blue).
+            let rgb = (iAlpha << 24) + (iRed << 16) + (iGreen << 8) + iBlue
+            return rgb
+        } else {
+            return nil
+        }
+    }
+    
+    public convenience init?(hex: String) {
+        let r, g, b, a: CGFloat
+
+        if hex.hasPrefix("0x") {
+            let start = hex.index(hex.startIndex, offsetBy: 2)
+            let hexColor = String(hex[start...])
+
+            if hexColor.count == 8 {
+                let scanner = Scanner(string: hexColor)
+                var hexNumber: UInt64 = 0
+
+                if scanner.scanHexInt64(&hexNumber) {
+                    a = CGFloat((hexNumber & 0xff000000) >> 24) / 255
+                    r = CGFloat((hexNumber & 0x00ff0000) >> 16) / 255
+                    g = CGFloat((hexNumber & 0x0000ff00) >> 8) / 255
+                    b = CGFloat((hexNumber & 0x000000ff)) / 255
+                    
+                    self.init(red: r, green: g, blue: b, alpha: a)
+                    return
+                }
+            }
+        }
+
+        return nil
+    }
+}
+#endif
