@@ -752,11 +752,15 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
             }
             
             do {
+#if TARGET_OS_IPHONE
+                    try self.eventStore.save(ekEvent!, span: .futureEvents)
+#else
                 if #available(macOS 10.14, *) {
                     try self.eventStore.save(ekEvent!, span: .futureEvents)
                 } else {
                     try self.eventStore.save(ekEvent!, span: .futureEvents, commit: true)
                 }
+#endif
                 result(ekEvent!.eventIdentifier)
             } catch {
                 self.eventStore.reset()
@@ -805,11 +809,15 @@ public class SwiftDeviceCalendarPlugin: NSObject, FlutterPlugin {
                 }
                 
                 do {
+#if TARGET_OS_IPHONE
+                    try self.eventStore.remove(ekEvent!, span: .futureEvents)
+#else
                     if #available(macOS 10.14, *) {
                         try self.eventStore.remove(ekEvent!, span: .futureEvents)
                     } else {
                         try self.eventStore.remove(ekEvent!, span: .futureEvents, commit: true)
                     }
+#endif
                     result(true)
                 } catch {
                     self.eventStore.reset()
